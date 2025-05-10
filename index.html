@@ -1,0 +1,292 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Solar System Simulation - N-Body with Collisions</title>
+    <style>
+        body { margin: 0; background: black; }
+        canvas { display: block; }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            font-family: Arial, sans-serif;
+            border-radius: 5px;
+        }
+        #controls label { display: block; margin: 5px 0; }
+        #controls select, #controls input, #controls button {
+            margin: 5px 0;
+            width: 150px;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <select id="planetSelect">
+            <option value="0">Mercury</option>
+            <option value="1">Venus</option>
+            <option value="2">Earth</option>
+            <option value="3">Mars</option>
+            <option value="4">Jupiter</option>
+            <option value="5">Saturn</option>
+            <option value="6">Uranus</option>
+            <option value="7">Neptune</option>
+        </select>
+        <div>
+            <label for="speedSlider">Speed Multiplier (-5 to 5): <span id="speedValue">1</span></label>
+            <input type="range" id="speedSlider" min="-5" max="5" step="0.01" value="1">
+        </div>
+        <button onclick="applySpeed()">Apply Speed</button>
+        <button onclick="resetSimulation()">Reset Simulation</button>
+    </div>
+    <canvas id="solarSystemCanvas"></canvas>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.2/p5.min.js"></script>
+    <script>
+        let planets = [];
+        let selectedPlanetIndex = 0;
+        const auToPixels = 10;
+        const G = 0.0001;
+        const sunMass = 1000000;
+        const sunRadius = 10;
+        const timeScale = 0.05; // Increased for faster motion
+        const epsilon = 0.1; // Prevent division by zero
+
+        const planetData = [
+            { name: 'Mercury', a_AU: 2.5, size: 6, color: [170, 170, 170], eccentricity: 0.2056, mass: 0.055, period: 0.0241 },
+            { name: 'Venus', a_AU: 3.0, size: 8, color: [255, 204, 0], eccentricity: 0.0067, mass: 0.815, period: 0.0615 },
+            { name: 'Earth', a_AU: 3.5, size: 8, color: [0, 0, 255], eccentricity: 0.0167, mass: 1, period: 0.1 },
+            { name: 'Mars', a_AU: 4.0, size: 7, color: [255, 0, 0], eccentricity: 0.0934, mass: 0.107, period: 0.1881 },
+            { name: 'Jupiter', a_AU: 5.20, size: 18, color: [255, 165, 0], eccentricity: 0.0489, mass: 317.8, period: 1.1862 },
+            { name: 'Saturn', a_AU: 9.58, size: 16, color: [255, 215, 0], eccentricity: 0.0565, mass: 95.2, period: 2.9457 },
+            { name: 'Uranus', a_AU: 19.20, size: 14, color: [0, 255, 255], eccentricity: 0.0463, mass: 14.5, period: 8.4021 },
+            { name: 'Neptune', a_AU: 30.06, size: 14, color: [0, 0, 139], eccentricity: 0.0097, mass: 17.1, period: 16.4791 }
+        ];
+
+        function setup() {
+            createCanvas(windowWidth, windowHeight);
+            resetPlanets();
+
+            const planetSelect = select('#planetSelect');
+            const speedSlider = select('#speedSlider');
+            const speedValue = select('#speedValue');
+
+            planetSelect.changed(() => {
+                selectedPlanetIndex = parseInt(planetSelect.value());
+                speedSlider.value(1);
+                speedValue.html('1');
+            });
+
+            speedSlider.input(() => {
+                speedValue.html(speedSlider.value());
+            });
+        }
+
+        function resetPlanets() {
+            planets = planetData.map(data => {
+                const a = data.a_AU * auToPixels;
+                const e = data.eccentricity;
+                const theta = random(0, TWO_PI);
+                const r = (a * (1 - e * e)) / (1 + e * cos(theta));
+                const x = r * cos(theta);
+                const y = r * sin(theta);
+                const v = sqrt(G * sunMass * (2 / r - 1 / a));
+                const vx = -v * (y / r);
+                const vy = v * (x / r);
+                return {
+                    a: a,
+                    e: e,
+                    size: data.size,
+                    color: data.color.slice(),
+                    mass: data.mass,
+                    x: x,
+                    y: y,
+                    vx: vx,
+                    vy: vy,
+                    collided: false
+                };
+            });
+        }
+
+        function applySpeed() {
+            const planet = planets[selectedPlanetIndex];
+            const multiplier = parseFloat(select('#speedSlider').value());
+            if (multiplier >= 0) {
+                // Positive or zero: Scale tangential velocity
+                planet.vx *= multiplier;
+                planet.vy *= multiplier;
+            } else {
+                // Negative: Reverse and scale velocity
+                const scale = Math.abs(multiplier);
+                planet.vx = -planet.vx * scale;
+                planet.vy = -planet.vy * scale;
+            }
+        }
+
+        function resetSimulation() {
+            resetPlanets();
+            select('#speedSlider').value(1);
+            select('#speedValue').html('1');
+        }
+
+        function draw() {
+            background(0);
+            translate(width / 2, height / 2);
+
+            // Draw Sun
+            fill(255, 255, 0);
+            noStroke();
+            ellipse(0, 0, sunRadius * 2, sunRadius * 2);
+
+            // Draw initial orbital paths
+            noFill();
+            stroke(255, 255, 255, 50);
+            planets.forEach(planet => {
+                const a = planet.a;
+                const b = a * sqrt(1 - planet.e * planet.e);
+                ellipse(-a * planet.e, 0, a * 2, b * 2);
+            });
+            noStroke();
+
+            // Calculate accelerations
+            const accelerations = planets.map(() => ({ ax: 0, ay: 0 }));
+            for (let i = 0; i < planets.length; i++) {
+                const planet_i = planets[i];
+                if (planet_i.collided) continue;
+
+                const r_i = sqrt(planet_i.x * planet_i.x + planet_i.y * planet_i.y);
+                accelerations[i].ax = -G * sunMass * planet_i.x / pow(r_i + epsilon, 3);
+                accelerations[i].ay = -G * sunMass * planet_i.y / pow(r_i + epsilon, 3);
+
+                for (let j = 0; j < planets.length; j++) {
+                    if (i !== j && !planets[j].collided) {
+                        const planet_j = planets[j];
+                        const dx = planet_j.x - planet_i.x;
+                        const dy = planet_j.y - planet_i.y;
+                        const dist = sqrt(dx * dx + dy * dy);
+                        if (dist > 0) {
+                            accelerations[i].ax += G * planet_j.mass * dx / pow(dist + epsilon, 3);
+                            accelerations[i].ay += G * planet_j.mass * dy / pow(dist + epsilon, 3);
+                        }
+                    }
+                }
+            }
+
+            // Update velocities
+            for (let i = 0; i < planets.length; i++) {
+                if (!planets[i].collided) {
+                    planets[i].vx += accelerations[i].ax * timeScale;
+                    planets[i].vy += accelerations[i].ay * timeScale;
+                }
+            }
+
+            // Check for planet-planet collisions
+            for (let i = 0; i < planets.length; i++) {
+                if (planets[i].collided) continue;
+                for (let j = i + 1; j < planets.length; j++) {
+                    if (planets[j].collided) continue;
+                    const planet_i = planets[i];
+                    const planet_j = planets[j]; // Fixed typo here
+                    const dx = planet_j.x - planet_i.x;
+                    const dy = planet_j.y - planet_i.y;
+                    const dist = sqrt(dx * dx + dy * dy);
+                    if (dist < (planet_i.size + planet_j.size) / 2) {
+                        // Collision: combine masses and conserve momentum
+                        const totalMass = planet_i.mass + planet_j.mass;
+                        const newVx = (planet_i.mass * planet_i.vx + planet_j.mass * planet_j.vx) / totalMass;
+                        const newVy = (planet_i.mass * planet_i.vy + planet_j.mass * planet_j.vy) / totalMass;
+                        const newColor = [
+                            (planet_i.color[0] + planet_j.color[0]) / 2,
+                            (planet_i.color[1] + planet_j.color[1]) / 2,
+                            (planet_i.color[2] + planet_j.color[2]) / 2
+                        ];
+                        planet_i.mass = totalMass;
+                        planet_i.vx = newVx;
+                        planet_i.vy = newVy;
+                        planet_i.color = newColor;
+                        planet_i.size = min(20, planet_i.size + planet_j.size / 2);
+                        planet_j.collided = true;
+                    }
+                }
+            }
+
+            // Update positions
+            planets.forEach(planet => {
+                if (!planet.collided) {
+                    planet.x += planet.vx * timeScale;
+                    planet.y += planet.vy * timeScale;
+                }
+            });
+
+            // Check for Sun collisions or escapes
+            planets.forEach((planet, index) => {
+                if (planet.collided) return;
+                const r = sqrt(planet.x * planet.x + planet.y * planet.y);
+                if (r < sunRadius + planet.size / 2) {
+                    planet.color = [255, 0, 0];
+                    planet.vx = 0;
+                    planet.vy = 0;
+                    planet.collided = true;
+                } else if (r > width * 2) {
+                    planet.color = [100, 100, 100];
+                    planet.vx *= 0.99;
+                    planet.vy *= 0.99;
+                }
+            });
+
+            // Draw planets
+            planets.forEach(planet => {
+                if (!planet.collided) {
+                    fill(...planet.color);
+                    ellipse(planet.x, planet.y, planet.size, planet.size);
+                }
+            });
+        }
+
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+        }
+    </script>
+</body>
+</html>
